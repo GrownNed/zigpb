@@ -1,13 +1,31 @@
 const std = @import("std");
-const pb = @import("protobuf.zig");
+const pb = @import("root.zig");
+
+fn unhex(comptime hex: []const u8) *const [hex.len / 2]u8 {
+    if (hex.len & 1 != 0) @compileError("invalid hex");
+
+    return comptime blk: {
+        var out: [hex.len / 2]u8 = undefined;
+        var i: usize = 0;
+
+        while (i < hex.len) : (i += 2) {
+            const hi = std.fmt.charToDigit(hex[i], 16) catch @compileError("invalid hex");
+            const lo = std.fmt.charToDigit(hex[i + 1], 16) catch @compileError("invalid hex");
+            out[i / 2] = (hi << 4) | lo;
+        }
+
+        const final = out;
+        break :blk &final;
+    };
+}
 
 fn expectEqualMessages(comptime T: type, expected: T, actual: T) !void {
-    if (@typeInfo(T) == .Optional) {
+    if (@typeInfo(T) == .optional) {
         try std.testing.expectEqual(expected == null, actual == null);
         return expectEqualMessages(std.meta.Child(T), expected.?, actual.?);
     }
 
-    if (@typeInfo(T) == .Union) {
+    if (@typeInfo(T) == .@"union") {
         try std.testing.expectEqual(std.meta.activeTag(expected), std.meta.activeTag(actual));
         switch (expected) {
             inline else => |val, tag| {
@@ -16,7 +34,7 @@ fn expectEqualMessages(comptime T: type, expected: T, actual: T) !void {
         }
     }
 
-    if (@typeInfo(T) == .Struct) {
+    if (@typeInfo(T) == .@"struct") {
         if (@hasDecl(T, "pb_desc")) {
             inline for (comptime std.meta.fields(T)) |field| {
                 try expectEqualMessages(field.type, @field(expected, field.name), @field(actual, field.name));
@@ -41,23 +59,23 @@ fn expectEqualMessages(comptime T: type, expected: T, actual: T) !void {
     }
 
     switch (@typeInfo(T)) {
-        .Int, .Float, .Enum => try std.testing.expectEqual(expected, actual),
+        .int, .float, .@"enum" => try std.testing.expectEqual(expected, actual),
         else => @compileError("Cannot test equality of type '" ++ @typeName(T) ++ "'"),
     }
 }
 
 fn initMessage(comptime T: type, comptime val: anytype, arena: std.mem.Allocator) !T {
-    if (@typeInfo(T) == .Optional) {
-        if (@typeInfo(@TypeOf(val)) == .Optional) {
+    if (@typeInfo(T) == .optional) {
+        if (@typeInfo(@TypeOf(val)) == .optional) {
             return if (val) |x| try initMessage(std.meta.Child(T), x, arena) else null;
         } else {
             return try initMessage(std.meta.Child(T), val, arena);
         }
     }
 
-    if (@typeInfo(T) == .Union) {
-        if (@typeInfo(@TypeOf(val)) != .Struct) @compileError("Expected struct literal to initialize union");
-        const fields = @typeInfo(@TypeOf(val)).Struct.fields;
+    if (@typeInfo(T) == .@"union") {
+        if (@typeInfo(@TypeOf(val)) != .@"struct") @compileError("Expected struct literal to initialize union");
+        const fields = @typeInfo(@TypeOf(val)).@"struct".fields;
         if (fields.len != 1) @compileError("Expected single-element struct to initialize union");
         return @unionInit(T, fields[0].name, try initMessage(
             std.meta.TagPayload(T, @field(std.meta.Tag(T), fields[0].name)),
@@ -66,7 +84,7 @@ fn initMessage(comptime T: type, comptime val: anytype, arena: std.mem.Allocator
         ));
     }
 
-    if (@typeInfo(T) == .Struct) {
+    if (@typeInfo(T) == .@"struct") {
         if (@hasDecl(T, "pb_desc")) {
             var result: T = undefined;
             inline for (comptime std.meta.fields(T)) |field| {
@@ -105,13 +123,30 @@ fn testEncodeDecode(comptime Msg: type, comptime val: anytype) !void {
     var buf = std.ArrayList(u8).init(std.testing.allocator);
     defer buf.deinit();
 
-    try pb.encodeMessage(buf.writer(), std.testing.allocator, msg);
+    try pb.encode(buf.writer(), std.testing.allocator, msg);
 
     var fbs = std.io.fixedBufferStream(buf.items);
-    const decoded = try pb.decodeMessage(Msg, fbs.reader(), std.testing.allocator);
-    defer decoded.deinit();
+    const decoded = try pb.decode(Msg, fbs.reader(), arena.allocator());
 
-    try expectEqualMessages(Msg, msg, decoded.msg);
+    try expectEqualMessages(Msg, msg, decoded);
+}
+
+fn testEncodeDecodeHex(comptime Msg: type, comptime val: anytype, comptime hex: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const msg = try initMessage(Msg, val, arena.allocator());
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try pb.encode(buf.writer(), std.testing.allocator, msg);
+    try std.testing.expectEqualSlices(u8, unhex(hex), buf.items);
+
+    var fbs = std.io.fixedBufferStream(buf.items);
+    const decoded = try pb.decode(Msg, fbs.reader(), arena.allocator());
+
+    try expectEqualMessages(Msg, msg, decoded);
 }
 
 test {
@@ -120,7 +155,7 @@ test {
         single2: u32,
         opt: ?u64,
         rep: std.ArrayListUnmanaged(i32),
-        map: pb.Map([]const u8, f32),
+        map: std.StringHashMapUnmanaged(f32),
         options: ?union(enum) {
             foo: u32,
             bar: []const u8,
@@ -171,4 +206,58 @@ test {
         },
         .en = .val2,
     });
+}
+
+test "repeated message" {
+    const SubMsg = struct {
+        num: u32,
+
+        pub const pb_desc = .{
+            .num = .{ 1, .varint },
+        };
+    };
+
+    const Msg = struct {
+        list: std.ArrayListUnmanaged(SubMsg),
+
+        pub const pb_desc = .{
+            .list = .{ 1, .{ .repeat = .default } },
+        };
+    };
+
+    try testEncodeDecode(Msg, .{
+        .list = .{ .{ .num = 69 }, .{ .num = 0 }, .{ .num = 42 } },
+    });
+}
+
+test "empty sub message" {
+    const SubMsg = struct {
+        num: u32,
+
+        pub const pb_desc = .{
+            .num = .{ 1, .varint },
+        };
+    };
+
+    const Msg = struct {
+        sub: SubMsg,
+
+        pub const pb_desc = .{
+            .sub = .{ 1, .default },
+        };
+    };
+
+    try testEncodeDecodeHex(Msg, .{ .sub = .{ .num = 0 } }, "0a00");
+}
+
+test "packed u32" {
+    const Msg = struct {
+        list: std.ArrayListUnmanaged(u32),
+
+        pub const pb_desc = .{
+            .list = .{ 1, .{ .repeat_pack = .varint } },
+        };
+    };
+
+    try testEncodeDecodeHex(Msg, .{ .list = .{ 1, 2, 3, 4 } }, "0a0401020304");
 }
