@@ -262,7 +262,7 @@ fn encodeAnyField(
 
 /// Encode an entire Protobuf message 'msg' into the given writer. Only temporary allocations are
 /// performed, all of which are cleaned up before this function returns.
-pub fn encode(w: anytype, allocator: std.mem.Allocator, msg: anytype) !void {
+pub fn encode(allocator: std.mem.Allocator, writer: anytype, msg: anytype) !void {
     const Msg = @TypeOf(msg);
     const pb_desc = comptime getPbDesc(Msg) orelse
         @compileError("Message type '" ++ @typeName(Msg) ++ "' must have a pb_desc decl");
@@ -277,7 +277,7 @@ pub fn encode(w: anytype, allocator: std.mem.Allocator, msg: anytype) !void {
         else
             null;
 
-        try encodeAnyField(w, allocator, @field(msg, field.name), desc, @typeName(Msg) ++ "." ++ field.name, default);
+        try encodeAnyField(writer, allocator, @field(msg, field.name), desc, @typeName(Msg) ++ "." ++ field.name, default);
     }
 }
 
@@ -589,24 +589,24 @@ fn maybeDecodeOneOf(comptime U: type, r: anytype, allocator: std.mem.Allocator, 
     return null;
 }
 
-pub fn decode(comptime Msg: type, r: anytype, allocator: std.mem.Allocator) !Msg {
+pub fn decode(comptime Msg: type, allocator: std.mem.Allocator, reader: anytype) !Msg {
     const pb_desc = comptime getPbDesc(Msg) orelse @compileError("Message type '" ++ @typeName(Msg) ++ "' must have a pb_desc decl");
     validateDescriptors(Msg);
 
     var result = initDefault(Msg, allocator);
 
-    while (decodeVarInt(r)) |tag| {
+    while (decodeVarInt(reader)) |tag| {
         const wire_type = std.meta.intToEnum(WireType, tag & 7) catch return error.MalformedInput;
         const field_num = std.math.cast(u29, tag >> 3) orelse return error.MalformedInput;
 
         inline for (std.meta.fields(Msg)) |field| {
             const desc_opt: ?FieldDescriptor = comptime pb_desc.getField(field.name);
 
-            if (try maybeDecodeAnyField(field.type, desc_opt, @typeName(Msg) ++ "." ++ field.name, r, allocator, wire_type, field_num, &@field(result, field.name))) {
+            if (try maybeDecodeAnyField(field.type, desc_opt, @typeName(Msg) ++ "." ++ field.name, reader, allocator, wire_type, field_num, &@field(result, field.name))) {
                 break;
             }
         } else {
-            try skipField(r, wire_type, field_num);
+            try skipField(reader, wire_type, field_num);
         }
     } else |err| switch (err) {
         error.EndOfStream => {},

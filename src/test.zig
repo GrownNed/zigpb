@@ -123,10 +123,10 @@ fn testEncodeDecode(comptime Msg: type, comptime val: anytype) !void {
     var buf = std.ArrayList(u8).init(std.testing.allocator);
     defer buf.deinit();
 
-    try pb.encode(buf.writer(), std.testing.allocator, msg);
+    try pb.encode(std.testing.allocator, buf.writer(), msg);
 
     var fbs = std.io.fixedBufferStream(buf.items);
-    const decoded = try pb.decode(Msg, fbs.reader(), arena.allocator());
+    const decoded = try pb.decode(Msg, arena.allocator(), fbs.reader());
 
     try expectEqualMessages(Msg, msg, decoded);
 }
@@ -140,11 +140,11 @@ fn testEncodeDecodeHex(comptime Msg: type, comptime val: anytype, comptime hex: 
     var buf = std.ArrayList(u8).init(std.testing.allocator);
     defer buf.deinit();
 
-    try pb.encode(buf.writer(), std.testing.allocator, msg);
+    try pb.encode(std.testing.allocator, buf.writer(), msg);
     try std.testing.expectEqualSlices(u8, unhex(hex), buf.items);
 
     var fbs = std.io.fixedBufferStream(buf.items);
-    const decoded = try pb.decode(Msg, fbs.reader(), arena.allocator());
+    const decoded = try pb.decode(Msg, arena.allocator(), fbs.reader());
 
     try expectEqualMessages(Msg, msg, decoded);
 }
