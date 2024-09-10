@@ -88,6 +88,10 @@ fn initMessage(comptime T: type, comptime val: anytype, arena: std.mem.Allocator
         if (@hasDecl(T, "pb_desc")) {
             var result: T = undefined;
             inline for (comptime std.meta.fields(T)) |field| {
+                if (field.default_value) |ptr| {
+                    @field(result, field.name) = @as(*const field.type, @alignCast(@ptrCast(ptr))).*;
+                    continue;
+                }
                 @field(result, field.name) = try initMessage(field.type, @field(val, field.name), arena);
             }
             return result;
@@ -260,4 +264,22 @@ test "packed u32" {
     };
 
     try testEncodeDecodeHex(Msg, .{ .list = .{ 1, 2, 3, 4 } }, "0a0401020304");
+}
+
+test "empty default" {
+    const Msg = struct {
+        int: u32 = 0,
+        str: []const u8 = &[0]u8{},
+        list: std.ArrayListUnmanaged(u32) = .empty,
+        map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+
+        pub const pb_desc = .{
+            .int = .{ 1, .varint },
+            .str = .{ 2, .string },
+            .list = .{ 3, .{ .repeat_pack = .varint } },
+            .map = .{ 4, .{ .map = .{ .varint, .varint } } },
+        };
+    };
+
+    try testEncodeDecodeHex(Msg, .{}, "");
 }

@@ -16,6 +16,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const module = b.addModule("zigpb", .{
+        .root_source_file = b.path("src/root.zig"),
+    });
+
     b.installArtifact(lib);
 
     // Creates a step for unit testing. This only builds the test executable
@@ -25,6 +29,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    lib_unit_tests.root_module.addImport("zigpb", module);
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 

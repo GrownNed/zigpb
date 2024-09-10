@@ -137,7 +137,6 @@ fn encodeSingleScalar(w: anytype, val: anytype, comptime desc: FieldDescriptor, 
         },
 
         []u8, []const u8 => {
-            if (override_default != null) @compileError("Cannot override default for []u8");
             if (!encode_default and val.len == 0) return;
             switch (desc.encoding) {
                 .string, .bytes => {
@@ -165,7 +164,7 @@ fn encodeSingleValue(w: anytype, allocator: std.mem.Allocator, val: anytype, com
         var buf = std.ArrayList(u8).init(allocator);
         defer buf.deinit();
 
-        try encode(buf.writer(), allocator, val);
+        try encode(allocator, buf.writer(), val);
 
         try encodeTag(w, desc.field_num, .len);
         try encodeVarInt(w, buf.items.len);
@@ -223,6 +222,8 @@ fn encodeAnyField(
             }, true, null);
         }
     } else if (desc.encoding == .repeat_pack) {
+        if (val.items.len == 0) return;
+
         var buf = std.ArrayList(u8).init(allocator);
         defer buf.deinit();
 
@@ -273,7 +274,7 @@ pub fn encode(allocator: std.mem.Allocator, writer: anytype, msg: anytype) !void
         const desc: ?FieldDescriptor = comptime pb_desc.getField(field.name);
 
         const default: ?field.type = if (field.default_value) |ptr|
-            @as(*const field.type, @ptrCast(ptr)).*
+            @as(*const field.type, @alignCast(@ptrCast(ptr))).*
         else
             null;
 
@@ -332,7 +333,7 @@ fn initDefault(comptime Msg: type, allocator: std.mem.Allocator) Msg {
         }
 
         const default: ?field.type = if (field.default_value) |ptr|
-            @as(*const field.type, @ptrCast(ptr)).*
+            @as(*const field.type, @alignCast(@ptrCast(ptr))).*
         else
             null;
 
@@ -474,7 +475,7 @@ fn decodeSingleValue(comptime T: type, comptime encoding: FieldEncoding, r: anyt
         if (wire_type != .len) return error.MalformedInput;
         const len = try decodeVarInt(r);
         var lr = std.io.limitedReader(r, len);
-        return decode(T, lr.reader(), allocator);
+        return decode(T, allocator, lr.reader());
     } else {
         return decodeSingleScalar(T, encoding, r, allocator, wire_type);
     }
@@ -630,7 +631,6 @@ const PbDesc = struct {
 
 // Directly making a pb_desc with fields of type FieldDescriptor is quite inconvenient, so instead
 // we'll take big literals in the same shape and parse them into the real descriptors.
-
 fn getPbDesc(comptime T: type) ?PbDesc {
     comptime {
         if (!@hasDecl(T, "pb_desc")) return null;
