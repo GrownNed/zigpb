@@ -320,7 +320,7 @@ fn validateDescriptorsInner(comptime Msg: type, comptime seen_field_nums: *[]con
     }
 }
 
-fn initDefault(comptime Msg: type, allocator: std.mem.Allocator) Msg {
+fn initDefault(comptime Msg: type) Msg {
     var result: Msg = undefined;
 
     inline for (comptime std.meta.fields(Msg)) |field| {
@@ -347,7 +347,7 @@ fn initDefault(comptime Msg: type, allocator: std.mem.Allocator) Msg {
                 @enumFromInt(0),
             .bool => default orelse false,
             .@"struct" => if (comptime getPbDesc(field.type) != null)
-                initDefault(field.type, allocator)
+                initDefault(field.type)
             else
                 field.type{},
             else => @compileError("Type '" ++ @typeName(field.type) ++ "' cannot be deserialized"),
@@ -594,7 +594,7 @@ pub fn decode(comptime Msg: type, allocator: std.mem.Allocator, reader: anytype)
     const pb_desc = comptime getPbDesc(Msg) orelse @compileError("Message type '" ++ @typeName(Msg) ++ "' must have a pb_desc decl");
     validateDescriptors(Msg);
 
-    var result = initDefault(Msg, allocator);
+    var result = initDefault(Msg);
 
     while (decodeVarInt(reader)) |tag| {
         const wire_type = std.meta.intToEnum(WireType, tag & 7) catch return error.MalformedInput;
@@ -622,6 +622,7 @@ const PbDesc = struct {
     fields: []const Entry,
 
     fn getField(self: PbDesc, name: []const u8) ?FieldDescriptor {
+        @setEvalBranchQuota(100 * self.fields.len);
         for (self.fields) |f| {
             if (std.mem.eql(u8, f[0], name)) return f[1];
         }
